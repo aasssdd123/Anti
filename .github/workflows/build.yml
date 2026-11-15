@@ -76,7 +76,6 @@ jobs:
           import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
           import net.minecraft.client.Minecraft;
           import net.minecraft.client.multiplayer.ClientPacketListener;
-          // import net.minecraft.network.RunningOnDifferentThreadException;
           import net.minecraft.network.chat.Component;
           import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket;
           import net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket;
@@ -115,9 +114,18 @@ jobs:
               private static void acb$guard(String what, Runnable action) {
                   try {
                       action.run();
-                  } catch (RuntimeException e) {
-                      throw e;
-                  if (e.getClass().getSimpleName().equals("RunningOnDifferentThreadException")) { throw e; } ACB_LOGGER.warn("Blocked bad packet ({}): {}", what, e.toString());
+                  } catch (RuntimeException t) {
+                      if (t.getClass().getSimpleName().equals("RunningOnDifferentThreadException")) {
+                          throw t;
+                      }
+                      ACB_LOGGER.warn("Blocked bad packet ({}): {}", what, t.toString());
+                      long now = System.currentTimeMillis();
+                      if (now - acb_lastNotice > 5000) {
+                          acb_lastNotice = now;
+                          Minecraft mc = Minecraft.getInstance();
+                          if (mc.player != null) {
+                              mc.player.displayClientMessage(
+                                      Component.literal("\u00a7e[AntiChunkBan] Blocked bad data (" + what + ")"), true);
                           }
                       }
                   }
