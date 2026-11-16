@@ -1,4 +1,4 @@
-name: Build AntiChunkBan
+name: Build AntiChunkBan 1.21.11
 
 on:
   workflow_dispatch:
@@ -11,94 +11,279 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Tải template Fabric 1.21.11
+      - name: Tai template Fabric 1.21.11
         uses: actions/checkout@v4
         with:
           repository: FabricMC/fabric-example-mod
           ref: 1.21.11
 
-      - name: Cài Java 21
+      - name: Cai Java 25
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 25
 
-      - name: Tạo code AntiChunkBan
+      - name: mod anti chunk bởi chieu2222
         run: |
           set -e
           rm -rf src/main/java src/client/java src/main/resources/assets
           rm -f src/main/resources/*.mixins.json src/client/resources/*.mixins.json
           sed -i 's|^\s*mappings .*|    mappings loom.officialMojangMappings()|' build.gradle
           sed -i 's/^archives_base_name.*/archives_base_name=antichunkban/' gradle.properties
-          mkdir -p src/client/java/com/example/antichunkban/mixin src/client/resources src/main/resources
+          sed -i 's/^mod_version.*/mod_version=1.1.0/' gradle.properties
+          mkdir -p src/client/java/com/antichunkban/mixin src/client/java/com/antichunkban/config src/client/resources src/main/resources
 
-          cat > src/main/resources/fabric.mod.json << 'EOF'
-          {
-            "schemaVersion": 1,
-            "id": "antichunkban",
-            "version": "1.0.0",
-            "name": "AntiChunkBan",
-            "description": "Chan chunk ban bang binh kinh nghiem",
-            "license": "MIT",
-            "environment": "client",
-            "mixins": [
-              { "config": "antichunkban.mixins.json", "environment": "client" }
-            ],
-            "depends": {
-              "fabricloader": ">=0.16.0",
-              "minecraft": "~1.21.11",
-              "java": ">=21",
-              "fabric-api": "*"
-            }
+          cat > src/client/java/com/antichunkban/AcbCommands.java << 'EOF'
+          package com.antichunkban;
+
+          import com.antichunkban.config.ModConfig;
+
+          /** Lenh go trong chat: .acb help | toggle | limit <n> | bottles <n> | status */
+          public final class AcbCommands {
+
+              private AcbCommands() { }
+
+              /** Tra ve true neu tin nhan la lenh cua mod (khi do khong gui len server). */
+              public static boolean handle(String message) {
+                  String trimmed = message.trim();
+                  String lower = trimmed.toLowerCase();
+                  boolean isCmd = lower.equals(".acb") || lower.startsWith(".acb ")
+                          || lower.equals(".antichunkban") || lower.startsWith(".antichunkban ");
+                  if (!isCmd) return false;
+
+                  String[] parts = trimmed.split("\\s+");
+                  String sub = parts.length > 1 ? parts[1].toLowerCase() : "help";
+
+                  if (sub.equals("toggle")) {
+                      ModConfig.enabled = !ModConfig.enabled;
+                      ModConfig.save();
+                      AntiChunkBan.reply("Protection is now " + (ModConfig.enabled ? "\u00a7aENABLED" : "\u00a7cDISABLED"));
+                  } else if (sub.equals("limit")) {
+                      Integer v = parseValue(parts);
+                      if (v == null) {
+                          AntiChunkBan.reply("Usage: .acb limit <count>");
+                      } else {
+                          ModConfig.maxBlockEntitiesPerChunk = v;
+                          ModConfig.save();
+                          AntiChunkBan.reply("Block entity limit per chunk set to " + v);
+                      }
+                  } else if (sub.equals("bottles")) {
+                      Integer v = parseValue(parts);
+                      if (v == null) {
+                          AntiChunkBan.reply("Usage: .acb bottles <count>");
+                      } else {
+                          ModConfig.maxBottlesPerChunk = v;
+                          ModConfig.save();
+                          AntiChunkBan.reply("XP bottle limit per chunk set to " + v);
+                      }
+                  } else if (sub.equals("status")) {
+                      AntiChunkBan.reply("Protection: " + (ModConfig.enabled ? "ENABLED" : "DISABLED")
+                              + " | block entities/chunk: " + ModConfig.maxBlockEntitiesPerChunk
+                              + " | NBT max: " + ModConfig.maxNbtSizeBytes
+                              + " | XP bottles/chunk: " + ModConfig.maxBottlesPerChunk);
+                  } else {
+                      AntiChunkBan.reply("Commands: .acb toggle | .acb limit <count> | .acb bottles <count> | .acb status");
+                  }
+                  return true;
+              }
+
+              private static Integer parseValue(String[] parts) {
+                  if (parts.length < 3) return null;
+                  try {
+                      return Math.max(0, Integer.parseInt(parts[2]));
+                  } catch (NumberFormatException e) {
+                      return null;
+                  }
+              }
           }
           EOF
 
-          cat > src/client/resources/antichunkban.mixins.json << 'EOF'
-          {
-            "required": true,
-            "minVersion": "0.8",
-            "package": "com.example.antichunkban.mixin",
-            "compatibilityLevel": "JAVA_21",
-            "client": [
-              "ClientPacketListenerMixin",
-              "ExperienceBottleLimitMixin",
-              "ConnectionMixin"
-            ],
-            "injectors": {
-              "defaultRequire": 1
-            }
-          }
-          EOF
+          cat > src/client/java/com/antichunkban/AntiChunkBan.java << 'EOF'
+          package com.antichunkban;
 
-          cat > src/client/java/com/example/antichunkban/mixin/ClientPacketListenerMixin.java << 'EOF'
-          package com.example.antichunkban.mixin;
-
-          import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
-          import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+          import com.antichunkban.config.ModConfig;
+          import net.fabricmc.api.ClientModInitializer;
           import net.minecraft.client.Minecraft;
-          import net.minecraft.client.multiplayer.ClientPacketListener;
           import net.minecraft.network.chat.Component;
-          import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket;
-          import net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket;
-          import net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket;
-          import net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket;
           import org.slf4j.Logger;
           import org.slf4j.LoggerFactory;
+
+          public class AntiChunkBan implements ClientModInitializer {
+
+              public static final String MOD_ID = "antichunkban";
+              public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+
+              private static long lastAlert = 0L;
+
+              @Override
+              public void onInitializeClient() {
+                  ModConfig.load();
+                  LOGGER.info("[AntiChunkBan] Initialized. Chunk Ban Protection: {}",
+                          ModConfig.enabled ? "ACTIVE" : "DISABLED");
+              }
+
+              /** Thong bao trong khung chat (toi da 1 lan / 3 giay de khong bi spam). */
+              public static void sendChatAlert(String message) {
+                  if (!ModConfig.chatAlerts) return;
+                  long now = System.currentTimeMillis();
+                  if (now - lastAlert < 3000L) return;
+                  lastAlert = now;
+                  Minecraft client = Minecraft.getInstance();
+                  client.execute(() -> {
+                      if (client.player != null) {
+                          client.player.displayClientMessage(
+                                  Component.literal("\u00a7c[AntiChunkBan] " + message), false);
+                      }
+                  });
+              }
+
+              /** Tra loi lenh cua nguoi choi (khong bi gioi han). */
+              public static void reply(String message) {
+                  Minecraft client = Minecraft.getInstance();
+                  client.execute(() -> {
+                      if (client.player != null) {
+                          client.player.displayClientMessage(
+                                  Component.literal("\u00a7b[AntiChunkBan] \u00a7f" + message), false);
+                      }
+                  });
+              }
+          }
+          EOF
+
+          cat > src/client/java/com/antichunkban/config/ModConfig.java << 'EOF'
+          package com.antichunkban.config;
+
+          import net.fabricmc.loader.api.FabricLoader;
+
+          import java.io.InputStream;
+          import java.io.OutputStream;
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+          import java.util.Properties;
+
+          public final class ModConfig {
+
+              public static boolean enabled = true;
+              public static boolean chatAlerts = true;
+              public static boolean guardPackets = true;
+              public static boolean skipCorruptPackets = true;
+              public static int maxBlockEntitiesPerChunk = 512;
+              public static int maxNbtSizeBytes = 32768;
+              public static int maxBottlesPerChunk = 32;
+
+              private ModConfig() { }
+
+              private static Path file() {
+                  return FabricLoader.getInstance().getConfigDir().resolve("antichunkban.properties");
+              }
+
+              public static void load() {
+                  Path p = file();
+                  if (!Files.exists(p)) {
+                      save();
+                      return;
+                  }
+                  try (InputStream in = Files.newInputStream(p)) {
+                      Properties props = new Properties();
+                      props.load(in);
+                      enabled = Boolean.parseBoolean(props.getProperty("enabled", "true"));
+                      chatAlerts = Boolean.parseBoolean(props.getProperty("chatAlerts", "true"));
+                      guardPackets = Boolean.parseBoolean(props.getProperty("guardPackets", "true"));
+                      skipCorruptPackets = Boolean.parseBoolean(props.getProperty("skipCorruptPackets", "true"));
+                      maxBlockEntitiesPerChunk = Integer.parseInt(props.getProperty("maxBlockEntitiesPerChunk", "512"));
+                      maxNbtSizeBytes = Integer.parseInt(props.getProperty("maxNbtSizeBytes", "32768"));
+                      maxBottlesPerChunk = Integer.parseInt(props.getProperty("maxBottlesPerChunk", "32"));
+                  } catch (Exception e) {
+                      System.err.println("[AntiChunkBan] Failed to load config: " + e.getMessage());
+                  }
+              }
+
+              public static void save() {
+                  try {
+                      Path p = file();
+                      if (p.getParent() != null) Files.createDirectories(p.getParent());
+                      Properties props = new Properties();
+                      props.setProperty("enabled", String.valueOf(enabled));
+                      props.setProperty("chatAlerts", String.valueOf(chatAlerts));
+                      props.setProperty("guardPackets", String.valueOf(guardPackets));
+                      props.setProperty("skipCorruptPackets", String.valueOf(skipCorruptPackets));
+                      props.setProperty("maxBlockEntitiesPerChunk", String.valueOf(maxBlockEntitiesPerChunk));
+                      props.setProperty("maxNbtSizeBytes", String.valueOf(maxNbtSizeBytes));
+                      props.setProperty("maxBottlesPerChunk", String.valueOf(maxBottlesPerChunk));
+                      try (OutputStream out = Files.newOutputStream(p)) {
+                          props.store(out, "AntiChunkBan Configuration");
+                      }
+                  } catch (Exception e) {
+                      System.err.println("[AntiChunkBan] Failed to save config: " + e.getMessage());
+                  }
+              }
+          }
+          EOF
+
+          cat > src/client/java/com/antichunkban/mixin/ClientPacketListenerMixin.java << 'EOF'
+          package com.antichunkban.mixin;
+
+          import com.antichunkban.AcbCommands;
+          import com.antichunkban.AntiChunkBan;
+          import com.antichunkban.config.ModConfig;
+          import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+          import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+          import net.minecraft.client.multiplayer.ClientPacketListener;
+          import net.minecraft.core.BlockPos;
+          import net.minecraft.nbt.CompoundTag;
+          import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket;
+          import net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket;
+          import net.minecraft.network.protocol.game.ClientboundLevelChunkPacketData;
+          import net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket;
+          import net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket;
           import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+          import java.lang.reflect.Field;
+          import java.lang.reflect.Modifier;
+          import java.util.ArrayList;
+          import java.util.List;
 
           @Mixin(ClientPacketListener.class)
           public abstract class ClientPacketListenerMixin {
 
-              private static final Logger ACB_LOGGER = LoggerFactory.getLogger("AntiChunkBan");
-              private static long acb_lastNotice = 0L;
+              private static Field acb_beField = null;
+              private static boolean acb_beFieldSearched = false;
 
+              // ---------- Chunk: cat bot block entity neu qua gioi han ----------
               @WrapMethod(method = "handleLevelChunkWithLight")
               private void acb$chunk(ClientboundLevelChunkWithLightPacket packet, Operation<Void> original) {
+                  if (ModConfig.enabled) {
+                      acb$trimBlockEntities(packet);
+                  }
                   acb$guard("chunk", () -> original.call(packet));
               }
 
+              // ---------- Block entity update: bo qua neu NBT qua lon ----------
               @WrapMethod(method = "handleBlockEntityData")
               private void acb$blockEntity(ClientboundBlockEntityDataPacket packet, Operation<Void> original) {
+                  if (ModConfig.enabled) {
+                      try {
+                          CompoundTag tag = packet.getTag();
+                          if (tag != null) {
+                              int size = tag.toString().length();
+                              if (size > ModConfig.maxNbtSizeBytes) {
+                                  BlockPos pos = packet.getPos();
+                                  AntiChunkBan.LOGGER.warn(
+                                          "[AntiChunkBan] Dropped oversized BlockEntityUpdate at {} (size: {} bytes > {} limit)",
+                                          pos, size, ModConfig.maxNbtSizeBytes);
+                                  AntiChunkBan.sendChatAlert(String.format(
+                                          "Blocked oversized BlockEntity at [%d, %d, %d] (%d bytes)!",
+                                          pos.getX(), pos.getY(), pos.getZ(), size));
+                                  return;
+                              }
+                          }
+                      } catch (Throwable t) {
+                          AntiChunkBan.LOGGER.error("[AntiChunkBan] Exception inspecting BlockEntityUpdate: {}", t.getMessage());
+                      }
+                  }
                   acb$guard("block entity", () -> original.call(packet));
               }
 
@@ -112,101 +297,86 @@ jobs:
                   acb$guard("container", () -> original.call(packet));
               }
 
+              // ---------- Lenh .acb trong chat ----------
+              @Inject(method = "sendChat", at = @At("HEAD"), cancellable = true, require = 0)
+              private void acb$onSendChat(String message, CallbackInfo ci) {
+                  if (AcbCommands.handle(message)) {
+                      ci.cancel();
+                  }
+              }
+
+              // ---------- Helpers ----------
               private static void acb$guard(String what, Runnable action) {
+                  if (!ModConfig.enabled || !ModConfig.guardPackets) {
+                      action.run();
+                      return;
+                  }
                   try {
                       action.run();
                   } catch (RuntimeException t) {
                       if (t.getClass().getSimpleName().equals("RunningOnDifferentThreadException")) {
                           throw t;
                       }
-                      ACB_LOGGER.warn("Blocked bad packet ({}): {}", what, t.toString());
-                      long now = System.currentTimeMillis();
-                      if (now - acb_lastNotice > 5000) {
-                          acb_lastNotice = now;
-                          Minecraft mc = Minecraft.getInstance();
-                          if (mc.player != null) {
-                              mc.player.displayClientMessage(
-                                      Component.literal("\u00a7e[AntiChunkBan] Blocked bad data (" + what + ")"), true);
+                      AntiChunkBan.LOGGER.warn("[AntiChunkBan] Blocked bad packet ({}): {}", what, t.toString());
+                      AntiChunkBan.sendChatAlert("Blocked bad data (" + what + ")");
+                  }
+              }
+
+              private static Field acb$findListField(Class<?> cls) {
+                  if (!acb_beFieldSearched) {
+                      acb_beFieldSearched = true;
+                      for (Field f : cls.getDeclaredFields()) {
+                          if (!Modifier.isStatic(f.getModifiers()) && List.class.isAssignableFrom(f.getType())) {
+                              try {
+                                  f.setAccessible(true);
+                                  acb_beField = f;
+                              } catch (Throwable ignored) { }
+                              break;
                           }
                       }
+                  }
+                  return acb_beField;
+              }
+
+              private static void acb$trimBlockEntities(ClientboundLevelChunkWithLightPacket packet) {
+                  try {
+                      ClientboundLevelChunkPacketData data = packet.getChunkData();
+                      if (data == null) return;
+                      Field f = acb$findListField(data.getClass());
+                      if (f == null) return;
+                      Object value = f.get(data);
+                      if (!(value instanceof List<?> list) || list.isEmpty()) return;
+
+                      int max = Math.max(0, ModConfig.maxBlockEntitiesPerChunk);
+                      int originalCount = list.size();
+                      if (originalCount <= max) return;
+
+                      f.set(data, new ArrayList<>(list.subList(0, max)));
+                      int dropped = originalCount - max;
+                      AntiChunkBan.LOGGER.warn(
+                              "[AntiChunkBan] Chunk [{}, {}] contained {} tile entities (limit: {}). Dropped {} tile entities.",
+                              packet.getX(), packet.getZ(), originalCount, max, dropped);
+                      AntiChunkBan.sendChatAlert(String.format(
+                              "Chunk [%d, %d]: Exceeded limit (%d TEs)! Purged %d dangerous block entities.",
+                              packet.getX(), packet.getZ(), originalCount, dropped));
+                  } catch (Throwable t) {
+                      AntiChunkBan.LOGGER.error("[AntiChunkBan] Critical failure in onChunkData interceptor: {}", t.getMessage());
                   }
               }
           }
           EOF
 
-          cat > src/client/java/com/example/antichunkban/mixin/ExperienceBottleLimitMixin.java << 'EOF'
-          package com.example.antichunkban.mixin;
+          cat > src/client/java/com/antichunkban/mixin/ConnectionMixin.java << 'EOF'
+          package com.antichunkban.mixin;
 
-          import net.minecraft.client.Minecraft;
-          import net.minecraft.client.multiplayer.ClientLevel;
-          import net.minecraft.client.multiplayer.ClientPacketListener;
-          import net.minecraft.network.chat.Component;
-          import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
-          import net.minecraft.world.entity.Entity;
-          import net.minecraft.world.entity.EntityType;
-          import org.spongepowered.asm.mixin.Mixin;
-          import org.spongepowered.asm.mixin.Shadow;
-          import org.spongepowered.asm.mixin.injection.At;
-          import org.spongepowered.asm.mixin.injection.Inject;
-          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-
-          @Mixin(ClientPacketListener.class)
-          public abstract class ExperienceBottleLimitMixin {
-
-              private static final int ACB_MAX_BOTTLES_PER_CHUNK = 32;
-              private static long acb_lastNotice = 0L;
-
-              @Shadow
-              private ClientLevel level;
-
-              @Inject(method = "handleAddEntity", at = @At("HEAD"), cancellable = true)
-              private void acb$limitExperienceBottles(ClientboundAddEntityPacket packet, CallbackInfo ci) {
-                  if (packet.getType() != EntityType.EXPERIENCE_BOTTLE) return;
-
-                  Minecraft mc = Minecraft.getInstance();
-                  if (!mc.isSameThread()) return;
-                  if (this.level == null) return;
-
-                  int chunkX = ((int) Math.floor(packet.getX())) >> 4;
-                  int chunkZ = ((int) Math.floor(packet.getZ())) >> 4;
-
-                  int count = 0;
-                  for (Entity e : this.level.entitiesForRendering()) {
-                      if (e.getType() == EntityType.EXPERIENCE_BOTTLE
-                              && (e.getBlockX() >> 4) == chunkX
-                              && (e.getBlockZ() >> 4) == chunkZ) {
-                          if (++count >= ACB_MAX_BOTTLES_PER_CHUNK) {
-                              ci.cancel();
-                              acb$notice(mc);
-                              return;
-                          }
-                      }
-                  }
-              }
-
-              private static void acb$notice(Minecraft mc) {
-                  long now = System.currentTimeMillis();
-                  if (now - acb_lastNotice < 5000) return;
-                  acb_lastNotice = now;
-                  if (mc.player != null) {
-                      mc.player.displayClientMessage(
-                              Component.literal("\u00a7e[AntiChunkBan] Blocking too many XP bottles in one chunk"), true);
-                  }
-              }
-          }
-          EOF
-
-          cat > src/client/java/com/example/antichunkban/mixin/ConnectionMixin.java << 'EOF'
-          package com.example.antichunkban.mixin;
-
+          import com.antichunkban.AntiChunkBan;
+          import com.antichunkban.config.ModConfig;
           import io.netty.channel.ChannelHandlerContext;
           import io.netty.handler.codec.DecoderException;
           import net.minecraft.client.Minecraft;
           import net.minecraft.network.Connection;
           import net.minecraft.network.chat.Component;
           import net.minecraft.network.protocol.PacketFlow;
-          import org.slf4j.Logger;
-          import org.slf4j.LoggerFactory;
           import org.spongepowered.asm.mixin.Final;
           import org.spongepowered.asm.mixin.Mixin;
           import org.spongepowered.asm.mixin.Shadow;
@@ -217,7 +387,6 @@ jobs:
           @Mixin(Connection.class)
           public abstract class ConnectionMixin {
 
-              private static final Logger ACB_LOGGER = LoggerFactory.getLogger("AntiChunkBan");
               private static long acb_windowStart = 0L;
               private static int acb_count = 0;
 
@@ -229,8 +398,9 @@ jobs:
               private void acb$onException(ChannelHandlerContext ctx, Throwable throwable, CallbackInfo ci) {
                   if (this.receiving != PacketFlow.CLIENTBOUND) return;
 
-                  ACB_LOGGER.warn("Connection exception caught", throwable);
+                  AntiChunkBan.LOGGER.warn("[AntiChunkBan] Connection exception caught", throwable);
 
+                  if (!ModConfig.enabled || !ModConfig.skipCorruptPackets) return;
                   if (!acb$isDecodeError(throwable)) return;
 
                   long now = System.currentTimeMillis();
@@ -262,15 +432,121 @@ jobs:
           }
           EOF
 
+          cat > src/client/java/com/antichunkban/mixin/ExperienceBottleLimitMixin.java << 'EOF'
+          package com.antichunkban.mixin;
+
+          import com.antichunkban.config.ModConfig;
+          import net.minecraft.client.Minecraft;
+          import net.minecraft.client.multiplayer.ClientLevel;
+          import net.minecraft.client.multiplayer.ClientPacketListener;
+          import net.minecraft.network.chat.Component;
+          import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
+          import net.minecraft.world.entity.Entity;
+          import net.minecraft.world.entity.EntityType;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.Shadow;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+          @Mixin(ClientPacketListener.class)
+          public abstract class ExperienceBottleLimitMixin {
+
+              private static long acb_lastNotice = 0L;
+
+              @Shadow
+              private ClientLevel level;
+
+              @Inject(method = "handleAddEntity", at = @At("HEAD"), cancellable = true)
+              private void acb$limitExperienceBottles(ClientboundAddEntityPacket packet, CallbackInfo ci) {
+                  if (!ModConfig.enabled) return;
+                  if (packet.getType() != EntityType.EXPERIENCE_BOTTLE) return;
+
+                  Minecraft mc = Minecraft.getInstance();
+                  if (!mc.isSameThread()) return;
+                  if (this.level == null) return;
+
+                  int max = Math.max(0, ModConfig.maxBottlesPerChunk);
+                  int chunkX = ((int) Math.floor(packet.getX())) >> 4;
+                  int chunkZ = ((int) Math.floor(packet.getZ())) >> 4;
+
+                  int count = 0;
+                  for (Entity e : this.level.entitiesForRendering()) {
+                      if (e.getType() == EntityType.EXPERIENCE_BOTTLE
+                              && (e.getBlockX() >> 4) == chunkX
+                              && (e.getBlockZ() >> 4) == chunkZ) {
+                          if (++count >= max) {
+                              ci.cancel();
+                              acb$notice(mc);
+                              return;
+                          }
+                      }
+                  }
+              }
+
+              private static void acb$notice(Minecraft mc) {
+                  long now = System.currentTimeMillis();
+                  if (now - acb_lastNotice < 5000) return;
+                  acb_lastNotice = now;
+                  if (mc.player != null) {
+                      mc.player.displayClientMessage(
+                              Component.literal("\u00a7e[AntiChunkBan] Blocking too many XP bottles in one chunk"), true);
+                  }
+              }
+          }
+          EOF
+
+          cat > src/client/resources/antichunkban.mixins.json << 'EOF'
+          {
+            "required": true,
+            "minVersion": "0.8",
+            "package": "com.antichunkban.mixin",
+            "compatibilityLevel": "JAVA_21",
+            "client": [
+              "ClientPacketListenerMixin",
+              "ExperienceBottleLimitMixin",
+              "ConnectionMixin"
+            ],
+            "injectors": {
+              "defaultRequire": 1
+            }
+          }
+          EOF
+
+          cat > src/main/resources/fabric.mod.json << 'EOF'
+          {
+            "schemaVersion": 1,
+            "id": "antichunkban",
+            "version": "1.1.0",
+            "name": "AntiChunkBan",
+            "description": "Client-side defense against chunk bans: block entity floods, oversized NBT, XP bottle floods and corrupted packets.",
+            "authors": ["Operator"],
+            "license": "MIT",
+            "environment": "client",
+            "entrypoints": {
+              "client": ["com.antichunkban.AntiChunkBan"]
+            },
+            "mixins": [
+              { "config": "antichunkban.mixins.json", "environment": "client" }
+            ],
+            "depends": {
+              "fabricloader": ">=0.16.0",
+              "minecraft": "~1.21.11",
+              "java": ">=21",
+              "fabric-api": "*"
+            }
+          }
+          EOF
+
       - name: Build
         run: |
           chmod +x gradlew
           ./gradlew build --no-daemon
 
-      - name: Lưu file jar
+      - name: Luu file jar
         uses: actions/upload-artifact@v4
         with:
-          name: AntiChunkBan-jar
+          name: AntiChunkBan-1.21.11-jar
           path: |
             build/libs/*.jar
             !build/libs/*-sources.jar
